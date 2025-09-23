@@ -1,4 +1,4 @@
-module github.com/jilio/galahad
+module github.com/galactica-corp/zkcertificates-queue-processor
 
 go 1.25.0
 

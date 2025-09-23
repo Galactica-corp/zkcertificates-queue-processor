@@ -2,7 +2,7 @@
 nixPkgs = ["go"]
 
 [phases.build]
-cmds = ["go mod download", "go build -o galahad ."]
+cmds = ["go mod download", "go build -o zqp ."]
 
 [start]
-cmd = "./galahad"
+cmd = "./zqp"

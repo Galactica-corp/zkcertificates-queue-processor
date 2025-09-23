@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	eventbus "github.com/jilio/ebu"
-	"github.com/jilio/galahad/zkregistry"
+	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
 	"github.com/jilio/guardians-sdk/v3/pkg/merkle"
 )
 

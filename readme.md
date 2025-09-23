@@ -1,10 +1,11 @@
-# Galahad - Queue Processor Service
+# ZK Certificates Queue Processor - Queue Processor Service
 
 A Go-based service that monitors and processes zkCertificate operations from the Galactica Network smart contracts.
 
 ## Overview
 
-Galahad implements the Queue Processor specification for the Galactica Network. It:
+ZK Certificates Queue Processor implements the Queue Processor specification for the Galactica Network. It:
+
 - Monitors the certificate queue for pending operations
 - Retrieves merkle proofs from the merkle proof service
 - Processes certificate issuance and revocation operations
@@ -50,14 +51,14 @@ Note: The service automatically reads the contract's initialization block from t
 
 ```bash
 # Clone the repository
-git clone https://github.com/jilio/galahad.git
-cd galahad
+git clone https://github.com/galactica-corp/zkcertificates-queue-processor.git
+cd ZK Certificates Queue Processor
 
 # Install dependencies
 go mod download
 
 # Build the binary
-go build -o galahad .
+go build -o ZK Certificates Queue Processor .
 ```
 
 ## Running
@@ -82,7 +83,7 @@ go run main.go
 ### Using the Binary
 
 ```bash
-./galahad
+./ZK Certificates Queue Processor
 ```
 
 ## Queue Processing Flow
@@ -99,7 +100,7 @@ go run main.go
 ### Project Structure
 
 ```
-galahad/
+ZK Certificates Queue Processor/
 ├── main.go              # Application entry point
 ├── service/             # Service management framework
 ├── evm/                 # Ethereum event monitoring
@@ -119,6 +120,7 @@ abigen --abi zkregistry/abi.json --pkg zkregistry --type ZkCertificateRegistry -
 ## Monitoring
 
 The service provides health check endpoints:
+
 - `GET /health` - Basic health check
 - `GET /metrics` - Service metrics (if enabled)
 

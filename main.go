@@ -7,12 +7,12 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/galactica-corp/zkcertificates-queue-processor/evm"
+	"github.com/galactica-corp/zkcertificates-queue-processor/queueprocessor"
+	"github.com/galactica-corp/zkcertificates-queue-processor/server"
+	"github.com/galactica-corp/zkcertificates-queue-processor/service"
+	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
 	eventbus "github.com/jilio/ebu"
-	"github.com/jilio/galahad/evm"
-	"github.com/jilio/galahad/queueprocessor"
-	"github.com/jilio/galahad/server"
-	"github.com/jilio/galahad/service"
-	"github.com/jilio/galahad/zkregistry"
 )
 
 type AppStartEvent struct{}
@@ -71,7 +71,7 @@ func main() {
 
 	serviceManager := service.NewManager()
 
-	srv, err := server.NewServer("galahad", "8080")
+	srv, err := server.NewServer("ZK Certificates Queue Processor", "8080")
 	if err != nil {
 		panic(err)
 	}
