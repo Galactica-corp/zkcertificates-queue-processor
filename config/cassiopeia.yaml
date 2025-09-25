@@ -1,0 +1,6 @@
+# Galactica Cassiopeia Testnet Configuration
+registries:
+  - name: "kyc"
+    address: "0xFe35EF5D1E8488a6b06BD35434613917e7d9760f"
+  - name: "twitter"
+    address: "0x325c958189b10d61db04042d12a33875B84E4fdF"

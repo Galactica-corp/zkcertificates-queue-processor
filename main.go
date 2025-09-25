@@ -13,9 +13,17 @@ import (
 	"github.com/galactica-corp/zkcertificates-queue-processor/service"
 	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
 	eventbus "github.com/jilio/ebu"
+	"gopkg.in/yaml.v3"
 )
 
 type AppStartEvent struct{}
+
+type Config struct {
+	Registries []struct {
+		Name    string `yaml:"name"`
+		Address string `yaml:"address"`
+	} `yaml:"registries"`
+}
 
 func main() {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
@@ -26,9 +34,26 @@ func main() {
 		slog.Warn("EVM_RPC_URL not set, using default", "url", evmRPCURL)
 	}
 
-	certificateRegistryAddress := os.Getenv("CONTRACT_ADDRESS")
-	if certificateRegistryAddress == "" {
-		slog.Error("CONTRACT_ADDRESS environment variable is required")
+	// Load config from YAML file
+	configFile := os.Getenv("CONFIG_FILE")
+	if configFile == "" {
+		configFile = "config.yaml"
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		slog.Error("Failed to read config file", "file", configFile, "error", err)
+		os.Exit(1)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		slog.Error("Failed to parse config file", "file", configFile, "error", err)
+		os.Exit(1)
+	}
+
+	if len(config.Registries) == 0 {
+		slog.Error("No registries configured in config file")
 		os.Exit(1)
 	}
 
@@ -41,23 +66,40 @@ func main() {
 	}
 	defer client.Close()
 
-	certificateRegistry, err := zkregistry.NewZkCertificateRegistry(common.HexToAddress(certificateRegistryAddress), client)
-	if err != nil {
-		panic(err)
-	}
-
 	bus := eventbus.New()
 
+	// Create a map to store registry contracts by address
+	registryContracts := make(map[common.Address]*zkregistry.ZkCertificateRegistry)
+	registryNamesByAddress := make(map[common.Address]string)
+
+	// Load all registry contracts
+	for _, registry := range config.Registries {
+		address := common.HexToAddress(registry.Address)
+		contract, err := zkregistry.NewZkCertificateRegistry(address, client)
+		if err != nil {
+			slog.Error("Failed to create registry contract", "name", registry.Name, "address", registry.Address, "error", err)
+			continue
+		}
+		registryContracts[address] = contract
+		registryNamesByAddress[address] = registry.Name
+		slog.Info("Loaded registry contract", "name", registry.Name, "address", registry.Address)
+	}
+
+	// Subscribe to events from all registries
 	eventbus.Subscribe(bus, func(event evm.ContractEvent) {
-		if event.Contract == common.HexToAddress(certificateRegistryAddress) {
-			if operationQueued, err := certificateRegistry.ParseOperationQueued(event.Event); err == nil {
+		if registry, ok := registryContracts[event.Contract]; ok {
+			registryName := registryNamesByAddress[event.Contract]
+			if operationQueued, err := registry.ParseOperationQueued(event.Event); err == nil {
 				slog.Info("OperationQueued event",
+					"registry", registryName,
 					"hash", common.Bytes2Hex(operationQueued.ZkCertificateLeafHash[:]),
 					"guardian", operationQueued.Guardian.Hex(),
 					"operation", operationQueued.Operation,
 					"queueIndex", operationQueued.QueueIndex.String())
 
 				eventbus.Publish(bus, queueprocessor.OperationQueuedEvent{
+					RegistryAddress:       event.Contract,
+					RegistryName:          registryName,
 					ZkCertificateLeafHash: operationQueued.ZkCertificateLeafHash,
 					Guardian:              operationQueued.Guardian,
 					Operation:             operationQueued.Operation,
@@ -83,23 +125,37 @@ func main() {
 	}
 	serviceManager.Register(evmService)
 
-	initBlockHeight, err := certificateRegistry.InitBlockHeight(nil)
-	if err != nil {
-		slog.Error("Failed to read initBlockHeight from contract", "error", err)
-		evmService.RegisterContractFromCurrent(common.HexToAddress(certificateRegistryAddress))
-	} else {
-		startBlock := new(big.Int).Sub(initBlockHeight, big.NewInt(1))
-		evmService.RegisterContract(common.HexToAddress(certificateRegistryAddress), startBlock)
-		slog.Info("Registered contract with init block",
-			"address", certificateRegistryAddress,
-			"initBlockHeight", initBlockHeight.String(),
-			"startBlock", startBlock.String())
+	// Register all registry contracts with the EVM service
+	for address, registry := range registryContracts {
+		registryName := registryNamesByAddress[address]
+		initBlockHeight, err := registry.InitBlockHeight(nil)
+		if err != nil {
+			slog.Error("Failed to read initBlockHeight from contract", "registry", registryName, "error", err)
+			evmService.RegisterContractFromCurrent(address)
+		} else {
+			startBlock := new(big.Int).Sub(initBlockHeight, big.NewInt(1))
+			evmService.RegisterContract(address, startBlock)
+			slog.Info("Registered contract with init block",
+				"registry", registryName,
+				"address", address.Hex(),
+				"initBlockHeight", initBlockHeight.String(),
+				"startBlock", startBlock.String())
+		}
 	}
 
-	queueProcessor, err := queueprocessor.NewService(
+	// Create queue processor with multiple registries
+	registries := make([]queueprocessor.RegistryConfig, 0, len(config.Registries))
+	for _, reg := range config.Registries {
+		registries = append(registries, queueprocessor.RegistryConfig{
+			Name:    reg.Name,
+			Address: common.HexToAddress(reg.Address),
+		})
+	}
+
+	queueProcessor, err := queueprocessor.NewServiceWithMultipleRegistries(
 		"queue-processor",
 		client,
-		common.HexToAddress(certificateRegistryAddress),
+		registries,
 		bus,
 	)
 	if err != nil {

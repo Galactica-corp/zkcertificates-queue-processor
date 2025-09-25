@@ -1,4 +1,4 @@
-# ZK Certificates Queue Processor - Queue Processor Service
+# ZK Certificates Queue Processor
 
 A Go-based service that monitors and processes zkCertificate operations from the Galactica Network smart contracts.
 
@@ -29,21 +29,41 @@ The service consists of several components:
 
 ## Configuration
 
+### Registry Configuration
+
+The service supports multiple registry contracts configured in YAML files. See `config/` directory for examples.
+
+Example configuration:
+
+```yaml
+registries:
+  - name: "Main Registry"
+    address: "0xFe35EF5D1E8488a6b06BD35434613917e7d9760f"
+  - name: "Secondary Registry" 
+    address: "0x1234567890abcdef1234567890abcdef12345678"
+```
+
+### Environment Configuration
+
 Copy `.env.example` to `.env` and configure:
 
 ```bash
 cp .env.example .env
 ```
 
-### Required Environment Variables
+### Environment Variables
 
-- `CONTRACT_ADDRESS`: The zkCertificateRegistry contract address to monitor
+- `CONFIG_FILE`: Path to configuration file (defaults to config.yaml)
+  - Use `config/cassiopeia.yaml` for testnet
+  - Use `config/mainnet.yaml` for mainnet
 - `EVM_RPC_URL`: Ethereum RPC endpoint (defaults to Galactica Cassiopeia testnet)
 
 ### Optional Environment Variables
 
 - `PRIVATE_KEY`: Private key for submitting transactions (required for processing operations)
 - `PORT`: HTTP server port (defaults to 8080)
+- `MERKLE_SERVICE_URL`: Merkle proof service gRPC endpoint (defaults to grpc-merkle.lookhere.tech:443)
+- `MERKLE_SERVICE_TLS`: Enable TLS for merkle service connection (defaults to true)
 
 Note: The service automatically reads the contract's initialization block from the chain and starts scanning from there.
 
@@ -52,13 +72,13 @@ Note: The service automatically reads the contract's initialization block from t
 ```bash
 # Clone the repository
 git clone https://github.com/galactica-corp/zkcertificates-queue-processor.git
-cd ZK Certificates Queue Processor
+cd zkcertificates-queue-processor
 
 # Install dependencies
 go mod download
 
 # Build the binary
-go build -o ZK Certificates Queue Processor .
+go build -o queue-processor .
 ```
 
 ## Running
@@ -83,7 +103,7 @@ go run main.go
 ### Using the Binary
 
 ```bash
-./ZK Certificates Queue Processor
+./queue-processor
 ```
 
 ## Queue Processing Flow
@@ -100,8 +120,13 @@ go run main.go
 ### Project Structure
 
 ```
-ZK Certificates Queue Processor/
+zkcertificates-queue-processor/
 ├── main.go              # Application entry point
+├── config/              # Configuration files
+│   ├── cassiopeia.yaml           # Testnet registry configuration
+│   ├── mainnet.yaml              # Mainnet registry configuration
+│   ├── nixpacks-cassiopeia.toml  # Testnet deployment config
+│   └── nixpacks-mainnet.toml     # Mainnet deployment config
 ├── service/             # Service management framework
 ├── evm/                 # Ethereum event monitoring
 ├── queueprocessor/      # Queue processing logic
@@ -117,6 +142,27 @@ To regenerate contract bindings:
 abigen --abi zkregistry/abi.json --pkg zkregistry --type ZkCertificateRegistry --out zkregistry/zkcertificate_registry.go
 ```
 
+## Deployment
+
+### Using Nixpacks
+
+The service includes network-specific Nixpacks configurations for deployment:
+
+#### Deploy to Cassiopeia Testnet:
+```bash
+nixpacks build . --config config/nixpacks-cassiopeia.toml
+```
+
+#### Deploy to Mainnet:
+```bash
+nixpacks build . --config config/nixpacks-mainnet.toml
+```
+
+Each configuration:
+- Sets the appropriate `CONFIG_FILE` environment variable
+- Configures the network-specific RPC endpoint
+- Builds and starts the queue processor
+
 ## Monitoring
 
 The service provides health check endpoints:
@@ -126,20 +172,7 @@ The service provides health check endpoints:
 
 Logs are output in structured JSON format for easy parsing and monitoring.
 
-## Testing
-
-Run tests with:
-
-```bash
-go test ./...
-```
-
 ## References
 
-- [Queue Processor Specification](Queue%20Processor%20Specification.md)
 - [Galactica Documentation](https://docs.galactica.com)
 - [Contract Explorer](https://galactica-cassiopeia.explorer.alchemy.com)
-
-## License
-
-[License information here]

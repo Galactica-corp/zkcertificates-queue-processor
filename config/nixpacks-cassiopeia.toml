@@ -1,0 +1,13 @@
+[phases.setup]
+nixPkgs = ["go"]
+
+[phases.build]
+cmds = ["go mod download", "go build -o queue-processor ."]
+
+[start]
+cmd = "CONFIG_FILE=config/cassiopeia.yaml ./queue-processor"
+
+[variables]
+EVM_RPC_URL = "https://galactica-cassiopeia.g.alchemy.com/public"
+MERKLE_SERVICE_URL = "grpc-merkle.lookhere.tech:443"
+MERKLE_SERVICE_TLS = "true"

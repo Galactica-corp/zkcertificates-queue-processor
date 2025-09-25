@@ -1,0 +1,5 @@
+# Galactica Mainnet Configuration
+registries:
+  - name: "Primary Registry"
+    address: "0x0000000000000000000000000000000000000000"  # TODO: Replace with actual mainnet address
+  # Add more registries as needed
