@@ -1,5 +1,6 @@
 # Galactica Mainnet Configuration
 registries:
-  - name: "Primary Registry"
-    address: "0x0000000000000000000000000000000000000000"  # TODO: Replace with actual mainnet address
-  # Add more registries as needed
+  - name: "kyc"
+    address: "0xf98E14C33c573c26Bb14d8ca71e1c8756727Be53"
+  - name: "twitter"
+    address: "0xa931b18407A970BD28c42c7B668A312A88aEfF5d"
