@@ -20,8 +20,9 @@ type AppStartEvent struct{}
 
 type Config struct {
 	Registries []struct {
-		Name    string `yaml:"name"`
-		Address string `yaml:"address"`
+		Name       string  `yaml:"name"`
+		Address    string  `yaml:"address"`
+		StartBlock *uint64 `yaml:"startBlock,omitempty"`
 	} `yaml:"registries"`
 }
 
@@ -71,6 +72,7 @@ func main() {
 	// Create a map to store registry contracts by address
 	registryContracts := make(map[common.Address]*zkregistry.ZkCertificateRegistry)
 	registryNamesByAddress := make(map[common.Address]string)
+	registryStartBlocks := make(map[common.Address]*uint64)
 
 	// Load all registry contracts
 	for _, registry := range config.Registries {
@@ -82,6 +84,7 @@ func main() {
 		}
 		registryContracts[address] = contract
 		registryNamesByAddress[address] = registry.Name
+		registryStartBlocks[address] = registry.StartBlock
 		slog.Info("Loaded registry contract", "name", registry.Name, "address", registry.Address)
 	}
 
@@ -128,18 +131,30 @@ func main() {
 	// Register all registry contracts with the EVM service
 	for address, registry := range registryContracts {
 		registryName := registryNamesByAddress[address]
-		initBlockHeight, err := registry.InitBlockHeight(nil)
-		if err != nil {
-			slog.Error("Failed to read initBlockHeight from contract", "registry", registryName, "error", err)
-			evmService.RegisterContractFromCurrent(address)
-		} else {
-			startBlock := new(big.Int).Sub(initBlockHeight, big.NewInt(1))
+
+		// Check if config provides a start block
+		if configStartBlock := registryStartBlocks[address]; configStartBlock != nil {
+			startBlock := new(big.Int).SetUint64(*configStartBlock)
 			evmService.RegisterContract(address, startBlock)
-			slog.Info("Registered contract with init block",
+			slog.Info("Registered contract with config start block",
 				"registry", registryName,
 				"address", address.Hex(),
-				"initBlockHeight", initBlockHeight.String(),
 				"startBlock", startBlock.String())
+		} else {
+			// Fall back to reading from contract
+			initBlockHeight, err := registry.InitBlockHeight(nil)
+			if err != nil {
+				slog.Error("Failed to read initBlockHeight from contract", "registry", registryName, "error", err)
+				evmService.RegisterContractFromCurrent(address)
+			} else {
+				startBlock := new(big.Int).Sub(initBlockHeight, big.NewInt(1))
+				evmService.RegisterContract(address, startBlock)
+				slog.Info("Registered contract with init block",
+					"registry", registryName,
+					"address", address.Hex(),
+					"initBlockHeight", initBlockHeight.String(),
+					"startBlock", startBlock.String())
+			}
 		}
 	}
 
