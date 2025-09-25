@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["go"]
+
+[phases.build]
+cmds = ["go mod download", "go build -o queue-processor ."]
+
+[start]
+cmd = "./queue-processor"
