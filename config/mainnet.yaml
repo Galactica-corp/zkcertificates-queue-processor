@@ -21,3 +21,7 @@ registries:
   - name: "rey"
     address: "0x1d1B46e0fBD39DD5C37F5f21002f48310F93b89F"
     startBlock: 26000
+  - name: "gip8"
+    address: "0xD868A54Adf8Be3A52E71ec9Fc700553cb6f209dC"
+    startBlock: 26000
+    
