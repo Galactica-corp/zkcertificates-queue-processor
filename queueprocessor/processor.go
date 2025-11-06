@@ -451,24 +451,49 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		return
 	}
 
+	// Set a high gas limit to bypass gas estimation that causes "execution reverted"
+	// This forces the transaction to be sent on-chain where we can see the real revert reason
+	auth.GasLimit = 1000000
+
 	// Log transaction sender
 	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
+
+	// Get current contract state for debugging
+	currentPointer, _ := registry.Contract.CurrentQueuePointer(nil)
+	queueLength, _ := registry.Contract.GetZkCertificateQueueLength(nil)
+	certData, _ := registry.Contract.ZkCertificateProcessingData(nil, zkCertHash)
+
+	slog.Info("Contract state before transaction",
+		"registry", registry.Name,
+		"registryAddress", address.Hex(),
+		"currentPointer", currentPointer,
+		"queueLength", queueLength,
+		"certState", certData.State,
+		"certGuardian", certData.Guardian.Hex())
+
 	slog.Info("Submitting transaction",
 		"registry", registry.Name,
 		"registryAddress", address.Hex(),
 		"from", senderAddress.Hex(),
-		"chainID", s.chainID.String())
+		"chainID", s.chainID.String(),
+		"leafIndex", emptyIndex,
+		"gasPrice", auth.GasPrice,
+		"gasLimit", auth.GasLimit,
+		"nonce", auth.Nonce)
 
 	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(emptyIndex)), zkCertHash, merkleProof)
 	if err != nil {
-		slog.Error("Failed to process issuance operation",
+		// Try to get more details about why it failed
+		slog.Error("Failed to process issuance operation - transaction was rejected before submission",
 			"registry", registry.Name,
 			"registryAddress", address.Hex(),
 			"hash", common.Bytes2Hex(zkCertHash[:]),
 			"leafIndex", emptyIndex,
 			"queueIndex", queueIndex.String(),
 			"from", senderAddress.Hex(),
-			"error", err)
+			"error", err,
+			"errorType", fmt.Sprintf("%T", err),
+			"note", "Transaction never made it to blockchain - failed during pre-flight checks")
 		return
 	}
 
@@ -543,24 +568,48 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		return
 	}
 
+	// Set a high gas limit to bypass gas estimation that causes "execution reverted"
+	// This forces the transaction to be sent on-chain where we can see the real revert reason
+	auth.GasLimit = 1000000
+
 	// Log transaction sender
 	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
+
+	// Get current contract state for debugging
+	currentPointer, _ := registry.Contract.CurrentQueuePointer(nil)
+	queueLength, _ := registry.Contract.GetZkCertificateQueueLength(nil)
+	certData, _ := registry.Contract.ZkCertificateProcessingData(nil, zkCertHash)
+
+	slog.Info("Contract state before transaction",
+		"registry", registry.Name,
+		"registryAddress", address.Hex(),
+		"currentPointer", currentPointer,
+		"queueLength", queueLength,
+		"certState", certData.State,
+		"certGuardian", certData.Guardian.Hex())
+
 	slog.Info("Submitting transaction",
 		"registry", registry.Name,
 		"registryAddress", address.Hex(),
 		"from", senderAddress.Hex(),
-		"chainID", s.chainID.String())
+		"chainID", s.chainID.String(),
+		"leafIndex", proof.LeafIndex,
+		"gasPrice", auth.GasPrice,
+		"gasLimit", auth.GasLimit,
+		"nonce", auth.Nonce)
 
 	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(proof.LeafIndex)), zkCertHash, merkleProof)
 	if err != nil {
-		slog.Error("Failed to process revocation operation",
+		slog.Error("Failed to process revocation operation - transaction was rejected before submission",
 			"registry", registry.Name,
 			"registryAddress", address.Hex(),
 			"hash", common.Bytes2Hex(zkCertHash[:]),
 			"leafIndex", proof.LeafIndex,
 			"queueIndex", queueIndex.String(),
 			"from", senderAddress.Hex(),
-			"error", err)
+			"error", err,
+			"errorType", fmt.Sprintf("%T", err),
+			"note", "Transaction never made it to blockchain - failed during pre-flight checks")
 		return
 	}
 
