@@ -336,17 +336,26 @@ func (s *Service) processQueueItems(address common.Address, registry *Registry, 
 	// Process based on state
 	switch certData.State {
 	case CertificateStateIssuanceQueued:
-		slog.Info("Processing issuance", "registry", registry.Name, "hash", common.Bytes2Hex(nextItemHash[:]))
+		slog.Info("Processing issuance",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
+			"hash", common.Bytes2Hex(nextItemHash[:]))
 		// For issuance, we need an empty leaf proof since we're adding a new certificate
 		s.processIssuance(address, registry, nextItemHash, certData.QueueIndex)
 
 	case CertificateStateRevocationQueued:
-		slog.Info("Processing revocation", "registry", registry.Name, "hash", common.Bytes2Hex(nextItemHash[:]))
+		slog.Info("Processing revocation",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
+			"hash", common.Bytes2Hex(nextItemHash[:]))
 		// For revocation, we need the proof of the existing certificate
 		s.processRevocation(address, registry, nextItemHash, certData.QueueIndex)
 
 	default:
-		slog.Warn("Unknown certificate state", "state", certData.State)
+		slog.Warn("Unknown certificate state",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
+			"state", certData.State)
 	}
 }
 
@@ -389,17 +398,28 @@ func (s *Service) SetPrivateKey(privateKeyHex string) error {
 
 // processIssuance handles certificate issuance by getting an empty leaf proof
 func (s *Service) processIssuance(address common.Address, registry *Registry, zkCertHash [32]byte, queueIndex *big.Int) {
+	slog.Info("Starting issuance process",
+		"registry", registry.Name,
+		"registryAddress", address.Hex(),
+		"hash", common.Bytes2Hex(zkCertHash[:]),
+		"queueIndex", queueIndex.String(),
+		"merkleServiceURL", s.merkleServiceURL)
+
 	// For issuance, we need to get an empty leaf proof
 	emptyIndex, proof, err := merkle.GetEmptyLeafProof(s.ctx, s.merkleClient, address.Hex())
 	if err != nil {
 		slog.Error("Failed to get empty leaf proof",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
 			"hash", common.Bytes2Hex(zkCertHash[:]),
+			"merkleServiceURL", s.merkleServiceURL,
 			"error", err)
 		return
 	}
 
 	slog.Info("Retrieved empty leaf proof for issuance",
 		"registry", registry.Name,
+		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"emptyLeafIndex", emptyIndex,
 		"pathLength", len(proof.Path))
@@ -413,6 +433,7 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 
 	slog.Info("Ready to call processNextOperation for issuance",
 		"registry", registry.Name,
+		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"leafIndex", emptyIndex,
 		"queueIndex", queueIndex.String(),
@@ -430,17 +451,34 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		return
 	}
 
+	// Log transaction sender
+	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
+	slog.Info("Submitting transaction",
+		"registry", registry.Name,
+		"registryAddress", address.Hex(),
+		"from", senderAddress.Hex(),
+		"chainID", s.chainID.String())
+
 	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(emptyIndex)), zkCertHash, merkleProof)
 	if err != nil {
-		slog.Error("Failed to process issuance operation", "error", err)
+		slog.Error("Failed to process issuance operation",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
+			"hash", common.Bytes2Hex(zkCertHash[:]),
+			"leafIndex", emptyIndex,
+			"queueIndex", queueIndex.String(),
+			"from", senderAddress.Hex(),
+			"error", err)
 		return
 	}
 
 	slog.Info("Submitted processNextOperation transaction for issuance",
 		"registry", registry.Name,
+		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"txHash", tx.Hash().Hex(),
-		"leafIndex", emptyIndex)
+		"leafIndex", emptyIndex,
+		"from", senderAddress.Hex())
 }
 
 // processRevocation handles certificate revocation by getting proof of existing leaf
@@ -449,18 +487,30 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 	leafValue := new(big.Int).SetBytes(zkCertHash[:])
 	leafStr := leafValue.String()
 
+	slog.Info("Starting revocation process",
+		"registry", registry.Name,
+		"registryAddress", address.Hex(),
+		"hash", common.Bytes2Hex(zkCertHash[:]),
+		"leafDecimal", leafStr,
+		"queueIndex", queueIndex.String(),
+		"merkleServiceURL", s.merkleServiceURL)
+
 	// For revocation, we need to find where this certificate exists in the tree
 	proof, err := merkle.GetProof(s.ctx, s.merkleClient, address.Hex(), leafStr)
 	if err != nil {
 		slog.Error("Failed to get merkle proof for revocation",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
 			"hash", common.Bytes2Hex(zkCertHash[:]),
 			"leafDecimal", leafStr,
+			"merkleServiceURL", s.merkleServiceURL,
 			"error", err)
 		return
 	}
 
 	slog.Info("Retrieved merkle proof for revocation",
 		"registry", registry.Name,
+		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"leafIndex", proof.LeafIndex,
 		"pathLength", len(proof.Path))
@@ -475,6 +525,7 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 
 	slog.Info("Ready to call processNextOperation for revocation",
 		"registry", registry.Name,
+		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"leafIndex", proof.LeafIndex,
 		"queueIndex", queueIndex.String(),
@@ -492,15 +543,32 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		return
 	}
 
+	// Log transaction sender
+	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
+	slog.Info("Submitting transaction",
+		"registry", registry.Name,
+		"registryAddress", address.Hex(),
+		"from", senderAddress.Hex(),
+		"chainID", s.chainID.String())
+
 	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(proof.LeafIndex)), zkCertHash, merkleProof)
 	if err != nil {
-		slog.Error("Failed to process revocation operation", "error", err)
+		slog.Error("Failed to process revocation operation",
+			"registry", registry.Name,
+			"registryAddress", address.Hex(),
+			"hash", common.Bytes2Hex(zkCertHash[:]),
+			"leafIndex", proof.LeafIndex,
+			"queueIndex", queueIndex.String(),
+			"from", senderAddress.Hex(),
+			"error", err)
 		return
 	}
 
 	slog.Info("Submitted processNextOperation transaction for revocation",
 		"registry", registry.Name,
+		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"txHash", tx.Hash().Hex(),
-		"leafIndex", proof.LeafIndex)
+		"leafIndex", proof.LeafIndex,
+		"from", senderAddress.Hex())
 }
