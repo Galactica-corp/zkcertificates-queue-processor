@@ -75,6 +75,8 @@ type Service struct {
 	merkleServiceTLS bool
 	privateKey       *ecdsa.PrivateKey
 	chainID          *big.Int
+	nonceMu          sync.Mutex
+	currentNonce     *uint64
 }
 
 func NewServiceWithMultipleRegistries(name string, client *ethclient.Client, registryConfigs []RegistryConfig, eventBus *eventbus.EventBus) (*Service, error) {
@@ -451,10 +453,6 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		return
 	}
 
-	// Set a high gas limit to bypass gas estimation that causes "execution reverted"
-	// This forces the transaction to be sent on-chain where we can see the real revert reason
-	auth.GasLimit = 1000000
-
 	// Log transaction sender
 	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
 
@@ -471,6 +469,23 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		"certState", certData.State,
 		"certGuardian", certData.Guardian.Hex())
 
+	// Get and increment nonce atomically
+	s.nonceMu.Lock()
+	if s.currentNonce == nil {
+		nonce, err := s.client.PendingNonceAt(s.ctx, senderAddress)
+		if err != nil {
+			s.nonceMu.Unlock()
+			slog.Error("Failed to get nonce", "error", err)
+			return
+		}
+		s.currentNonce = &nonce
+	}
+	thisNonce := *s.currentNonce
+	*s.currentNonce++
+	s.nonceMu.Unlock()
+
+	auth.Nonce = big.NewInt(int64(thisNonce))
+
 	slog.Info("Submitting transaction",
 		"registry", registry.Name,
 		"registryAddress", address.Hex(),
@@ -479,7 +494,7 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		"leafIndex", emptyIndex,
 		"gasPrice", auth.GasPrice,
 		"gasLimit", auth.GasLimit,
-		"nonce", auth.Nonce)
+		"nonce", thisNonce)
 
 	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(emptyIndex)), zkCertHash, merkleProof)
 	if err != nil {
@@ -568,10 +583,6 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		return
 	}
 
-	// Set a high gas limit to bypass gas estimation that causes "execution reverted"
-	// This forces the transaction to be sent on-chain where we can see the real revert reason
-	auth.GasLimit = 1000000
-
 	// Log transaction sender
 	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
 
@@ -588,6 +599,23 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		"certState", certData.State,
 		"certGuardian", certData.Guardian.Hex())
 
+	// Get and increment nonce atomically
+	s.nonceMu.Lock()
+	if s.currentNonce == nil {
+		nonce, err := s.client.PendingNonceAt(s.ctx, senderAddress)
+		if err != nil {
+			s.nonceMu.Unlock()
+			slog.Error("Failed to get nonce", "error", err)
+			return
+		}
+		s.currentNonce = &nonce
+	}
+	thisNonce := *s.currentNonce
+	*s.currentNonce++
+	s.nonceMu.Unlock()
+
+	auth.Nonce = big.NewInt(int64(thisNonce))
+
 	slog.Info("Submitting transaction",
 		"registry", registry.Name,
 		"registryAddress", address.Hex(),
@@ -596,7 +624,7 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		"leafIndex", proof.LeafIndex,
 		"gasPrice", auth.GasPrice,
 		"gasLimit", auth.GasLimit,
-		"nonce", auth.Nonce)
+		"nonce", thisNonce)
 
 	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(proof.LeafIndex)), zkCertHash, merkleProof)
 	if err != nil {
