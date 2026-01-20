@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+
+	sentryutil "github.com/galactica-corp/zkcertificates-queue-processor/sentry"
 )
 
 type Server struct {
@@ -29,9 +31,12 @@ func NewServer(name, port string, opts ...Option) (*Server, error) {
 func (s *Server) Start() {
 	slog.Info(s.name+" server started", "port", s.port)
 	go func() {
+		defer sentryutil.RecoverAndCapture(map[string]string{"location": "http_server", "port": s.port})
 		err := s.httpServer.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server stopped", "error", err)
+			sentryutil.CaptureError(err, map[string]string{"location": "http_server", "port": s.port})
+			sentryutil.Flush()
 			os.Exit(1)
 		}
 	}()

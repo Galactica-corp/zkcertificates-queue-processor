@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"math/big"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/galactica-corp/zkcertificates-queue-processor/evm"
 	"github.com/galactica-corp/zkcertificates-queue-processor/logging"
 	"github.com/galactica-corp/zkcertificates-queue-processor/queueprocessor"
+	sentryutil "github.com/galactica-corp/zkcertificates-queue-processor/sentry"
 	"github.com/galactica-corp/zkcertificates-queue-processor/server"
 	"github.com/galactica-corp/zkcertificates-queue-processor/service"
 	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
@@ -31,6 +33,10 @@ func main() {
 	cfg := logging.ConfigFromEnv()
 	logging.SetDefaultLogger(cfg)
 
+	sentryutil.Init()
+	defer sentryutil.Flush()
+	defer sentryutil.RecoverAndCapture(map[string]string{"location": "main"})
+
 	evmRPCURL := os.Getenv("EVM_RPC_URL")
 	if evmRPCURL == "" {
 		evmRPCURL = "https://galactica-cassiopeia.g.alchemy.com/public"
@@ -46,17 +52,23 @@ func main() {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		slog.Error("Failed to read config file", "file", configFile, "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "config", "file": configFile})
+		sentryutil.Flush()
 		os.Exit(1)
 	}
 
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		slog.Error("Failed to parse config file", "file", configFile, "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "config", "file": configFile})
+		sentryutil.Flush()
 		os.Exit(1)
 	}
 
 	if len(config.Registries) == 0 {
 		slog.Error("No registries configured in config file")
+		sentryutil.CaptureError(fmt.Errorf("no registries configured in config file"), map[string]string{"location": "config", "file": configFile})
+		sentryutil.Flush()
 		os.Exit(1)
 	}
 
@@ -65,7 +77,10 @@ func main() {
 	// Connect to Ethereum client
 	client, err := ethclient.Dial(evmRPCURL)
 	if err != nil {
-		panic(err)
+		slog.Error("Failed to connect to Ethereum client", "url", evmRPCURL, "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "eth_client", "url": evmRPCURL})
+		sentryutil.Flush()
+		os.Exit(1)
 	}
 	defer client.Close()
 
@@ -113,13 +128,19 @@ func main() {
 
 	srv, err := server.NewServer("ZK Certificates Queue Processor", "8080")
 	if err != nil {
-		panic(err)
+		slog.Error("Failed to create HTTP server", "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "http_server_init"})
+		sentryutil.Flush()
+		os.Exit(1)
 	}
 	serviceManager.Register(srv)
 
 	evmService, err := evm.NewService("evm", evmRPCURL, bus)
 	if err != nil {
-		panic(err)
+		slog.Error("Failed to create EVM service", "url", evmRPCURL, "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "evm_service_init", "url": evmRPCURL})
+		sentryutil.Flush()
+		os.Exit(1)
 	}
 	serviceManager.Register(evmService)
 
@@ -169,7 +190,10 @@ func main() {
 		bus,
 	)
 	if err != nil {
-		panic(err)
+		slog.Error("Failed to create queue processor", "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "queue_processor_init"})
+		sentryutil.Flush()
+		os.Exit(1)
 	}
 
 	if privateKey != "" {

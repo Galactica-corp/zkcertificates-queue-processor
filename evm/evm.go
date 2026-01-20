@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	sentryutil "github.com/galactica-corp/zkcertificates-queue-processor/sentry"
 	eventbus "github.com/jilio/ebu"
 )
 
@@ -125,6 +126,7 @@ func (s *Service) Start() {
 	client, err := ethclient.Dial(s.rpcURL)
 	if err != nil {
 		slog.Error("failed to connect to EVM node", "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "evm_connection", "rpc": s.rpcURL})
 		return
 	}
 	s.client = client
@@ -133,6 +135,7 @@ func (s *Service) Start() {
 	chainID, err := client.ChainID(context.Background())
 	if err != nil {
 		slog.Error("failed to get chain ID", "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "evm_chain_id", "rpc": s.rpcURL})
 		return
 	}
 	slog.Info("connected to EVM", "service", s.name, "chainID", chainID)
@@ -141,7 +144,10 @@ func (s *Service) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.wg.Add(1)
-	go s.listenForEvents(ctx)
+	go func() {
+		defer sentryutil.RecoverAndCapture(map[string]string{"location": "evm_event_listener"})
+		s.listenForEvents(ctx)
+	}()
 }
 
 // listenForEvents monitors registered contracts for events

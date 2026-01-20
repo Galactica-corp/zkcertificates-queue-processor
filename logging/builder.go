@@ -3,8 +3,11 @@ package logging
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"time"
+
+	sentryutil "github.com/galactica-corp/zkcertificates-queue-processor/sentry"
 )
 
 // OperationBuilder accumulates context throughout an operation lifecycle
@@ -103,10 +106,11 @@ func (b *OperationBuilder) EmitSuccess() {
 	b.emit()
 }
 
-// EmitFailure logs the operation as failed
+// EmitFailure logs the operation as failed and sends to Sentry
 func (b *OperationBuilder) EmitFailure() {
 	b.event.Outcome = OutcomeFailure
 	b.emit()
+	b.sendToSentry()
 }
 
 // EmitSkipped logs the operation as skipped
@@ -184,4 +188,69 @@ func generateOperationID() string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// sendToSentry sends the wide event to Sentry for error tracking
+func (b *OperationBuilder) sendToSentry() {
+	// Build the wide event map for Sentry
+	event := map[string]any{
+		"operation_id":   b.event.OperationID,
+		"operation_type": b.event.OperationType,
+		"outcome":        b.event.Outcome,
+	}
+
+	if b.event.Registry != nil {
+		event["registry"] = map[string]any{
+			"name":    b.event.Registry.Name,
+			"address": b.event.Registry.Address,
+		}
+	}
+
+	if b.event.Certificate != nil {
+		event["certificate"] = map[string]any{
+			"leaf_hash":   b.event.Certificate.LeafHash,
+			"guardian":    b.event.Certificate.Guardian,
+			"queue_index": b.event.Certificate.QueueIndex,
+		}
+	}
+
+	if b.event.MerkleProof != nil {
+		event["merkle_proof"] = map[string]any{
+			"leaf_index":   b.event.MerkleProof.LeafIndex,
+			"proof_length": b.event.MerkleProof.ProofLength,
+			"fetch_ms":     b.event.MerkleProof.FetchMs,
+		}
+	}
+
+	if b.event.Transaction != nil {
+		event["transaction"] = map[string]any{
+			"hash":      b.event.Transaction.Hash,
+			"nonce":     b.event.Transaction.Nonce,
+			"attempts":  b.event.Transaction.Attempts,
+			"submit_ms": b.event.Transaction.SubmitMs,
+		}
+	}
+
+	if b.event.Timing != nil {
+		event["timing"] = map[string]any{
+			"total_ms": b.event.Timing.TotalMs,
+		}
+	}
+
+	if b.event.Error != nil {
+		event["error"] = map[string]any{
+			"message": b.event.Error.Message,
+			"phase":   b.event.Error.Phase,
+		}
+	}
+
+	// Create error from the error context
+	var err error
+	if b.event.Error != nil {
+		err = errors.New(b.event.Error.Message)
+	} else {
+		err = errors.New("operation failed")
+	}
+
+	sentryutil.CaptureWideEvent(err, event)
 }
