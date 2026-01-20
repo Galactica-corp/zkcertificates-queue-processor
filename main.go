@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/galactica-corp/zkcertificates-queue-processor/evm"
+	"github.com/galactica-corp/zkcertificates-queue-processor/logging"
 	"github.com/galactica-corp/zkcertificates-queue-processor/queueprocessor"
 	"github.com/galactica-corp/zkcertificates-queue-processor/server"
 	"github.com/galactica-corp/zkcertificates-queue-processor/service"
@@ -27,12 +28,13 @@ type Config struct {
 }
 
 func main() {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+	cfg := logging.ConfigFromEnv()
+	logging.SetDefaultLogger(cfg)
 
 	evmRPCURL := os.Getenv("EVM_RPC_URL")
 	if evmRPCURL == "" {
 		evmRPCURL = "https://galactica-cassiopeia.g.alchemy.com/public"
-		slog.Warn("EVM_RPC_URL not set, using default", "url", evmRPCURL)
+		slog.Debug("EVM_RPC_URL not set, using default", "url", evmRPCURL)
 	}
 
 	// Load config from YAML file
@@ -85,7 +87,7 @@ func main() {
 		registryContracts[address] = contract
 		registryNamesByAddress[address] = registry.Name
 		registryStartBlocks[address] = registry.StartBlock
-		slog.Info("Loaded registry contract", "name", registry.Name, "address", registry.Address)
+		slog.Debug("Loaded registry contract", "name", registry.Name, "address", registry.Address)
 	}
 
 	// Subscribe to events from all registries
@@ -93,13 +95,6 @@ func main() {
 		if registry, ok := registryContracts[event.Contract]; ok {
 			registryName := registryNamesByAddress[event.Contract]
 			if operationQueued, err := registry.ParseOperationQueued(event.Event); err == nil {
-				slog.Info("OperationQueued event",
-					"registry", registryName,
-					"hash", common.Bytes2Hex(operationQueued.ZkCertificateLeafHash[:]),
-					"guardian", operationQueued.Guardian.Hex(),
-					"operation", operationQueued.Operation,
-					"queueIndex", operationQueued.QueueIndex.String())
-
 				eventbus.Publish(bus, queueprocessor.OperationQueuedEvent{
 					RegistryAddress:       event.Contract,
 					RegistryName:          registryName,

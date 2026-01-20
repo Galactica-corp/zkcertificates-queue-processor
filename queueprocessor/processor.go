@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/galactica-corp/zkcertificates-queue-processor/logging"
 	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
 	eventbus "github.com/jilio/ebu"
 	"github.com/jilio/guardians-sdk/v3/pkg/merkle"
@@ -219,13 +220,6 @@ func (s *Service) handleOperationQueued(event OperationQueuedEvent) {
 	registry.Mu.Lock()
 	defer registry.Mu.Unlock()
 
-	slog.Info("Received OperationQueued event",
-		"registry", registry.Name,
-		"hash", event.ZkCertificateLeafHash.Hex(),
-		"guardian", event.Guardian.Hex(),
-		"operation", event.Operation,
-		"queueIndex", event.QueueIndex.String())
-
 	// Add to registry's queue
 	op := QueuedOperation{
 		Hash:       event.ZkCertificateLeafHash,
@@ -268,24 +262,22 @@ func (s *Service) checkAndProcessRegistryQueue(address common.Address, registry 
 		return
 	}
 
-	slog.Info("Queue status",
+	slog.Debug("Queue status",
 		"registry", registry.Name,
 		"currentPointer", currentPointer.String(),
 		"queueLength", queueLength.String(),
 		"hasItemsToProcess", currentPointer.Cmp(queueLength) < 0)
 
-	// Debug: Check states of next few items
-	if true { // Always show debug info for now
-		for i := 0; i < 3 && new(big.Int).Add(currentPointer, big.NewInt(int64(i))).Cmp(queueLength) < 0; i++ {
-			idx := new(big.Int).Add(currentPointer, big.NewInt(int64(i)))
-			if hash, err := registry.Contract.ZkCertificateQueue(nil, idx); err == nil {
-				if data, err := registry.Contract.ZkCertificateProcessingData(nil, hash); err == nil {
-					slog.Debug("Queue item preview",
-						"registry", registry.Name,
-						"index", idx.String(),
-						"hash", common.Bytes2Hex(hash[:]),
-						"state", data.State)
-				}
+	// Preview next few items in queue
+	for i := 0; i < 3 && new(big.Int).Add(currentPointer, big.NewInt(int64(i))).Cmp(queueLength) < 0; i++ {
+		idx := new(big.Int).Add(currentPointer, big.NewInt(int64(i)))
+		if hash, err := registry.Contract.ZkCertificateQueue(nil, idx); err == nil {
+			if data, err := registry.Contract.ZkCertificateProcessingData(nil, hash); err == nil {
+				slog.Debug("Queue item preview",
+					"registry", registry.Name,
+					"index", idx.String(),
+					"hash", common.Bytes2Hex(hash[:]),
+					"state", data.State)
 			}
 		}
 	}
@@ -317,13 +309,6 @@ func (s *Service) processQueueItems(address common.Address, registry *Registry, 
 		return
 	}
 
-	slog.Info("Found item to process",
-		"registry", registry.Name,
-		"index", currentPointer.String(),
-		"hash", common.Bytes2Hex(nextItemHash[:]),
-		"state", certData.State,
-		"guardian", certData.Guardian.Hex())
-
 	// Check if it's in turn to be processed
 	isInTurn, err := registry.Contract.IsZkCertificateInTurn(nil, nextItemHash)
 	if err != nil {
@@ -339,21 +324,9 @@ func (s *Service) processQueueItems(address common.Address, registry *Registry, 
 	// Process based on state
 	switch certData.State {
 	case CertificateStateIssuanceQueued:
-		slog.Info("Processing issuance",
-			"registry", registry.Name,
-			"registryAddress", address.Hex(),
-			"hash", common.Bytes2Hex(nextItemHash[:]))
-		// For issuance, we need an empty leaf proof since we're adding a new certificate
 		s.processIssuance(address, registry, nextItemHash, certData.QueueIndex)
-
 	case CertificateStateRevocationQueued:
-		slog.Info("Processing revocation",
-			"registry", registry.Name,
-			"registryAddress", address.Hex(),
-			"hash", common.Bytes2Hex(nextItemHash[:]))
-		// For revocation, we need the proof of the existing certificate
 		s.processRevocation(address, registry, nextItemHash, certData.QueueIndex)
-
 	default:
 		slog.Warn("Unknown certificate state",
 			"registry", registry.Name,
@@ -427,13 +400,15 @@ func (s *Service) prepareTransactor() (*bind.TransactOpts, uint64, error) {
 	return auth, thisNonce, nil
 }
 
-// submitWithRetry wraps transaction submission with retry logic and nonce reset
+// submitWithRetry wraps transaction submission with retry logic and nonce reset.
+// Returns the result, final nonce used, number of attempts, and any error.
 func (s *Service) submitWithRetry(
 	registry *Registry,
 	submitFn func(auth *bind.TransactOpts) (interface{}, error),
 	maxRetries int,
-) (interface{}, error) {
+) (result interface{}, finalNonce uint64, attempts int, err error) {
 	var lastErr error
+	var lastNonce uint64
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			// Reset nonce before retry
@@ -442,37 +417,22 @@ func (s *Service) submitWithRetry(
 			s.nonceMu.Unlock()
 
 			backoff := time.Duration(1<<attempt) * time.Second
-			slog.Info("Retrying transaction", "registry", registry.Name, "attempt", attempt+1, "backoff", backoff)
 			time.Sleep(backoff)
 		}
 
-		auth, nonce, err := s.prepareTransactor()
-		if err != nil {
-			lastErr = err
-			slog.Warn("Failed to prepare transactor",
-				"registry", registry.Name,
-				"attempt", attempt+1,
-				"error", err)
+		auth, nonce, prepErr := s.prepareTransactor()
+		if prepErr != nil {
+			lastErr = prepErr
 			continue
 		}
+		lastNonce = nonce
 
-		slog.Info("Submitting transaction",
-			"registry", registry.Name,
-			"from", crypto.PubkeyToAddress(s.privateKey.PublicKey).Hex(),
-			"nonce", nonce,
-			"attempt", attempt+1)
-
-		result, err := submitFn(auth)
-		if err == nil {
-			return result, nil
+		result, submitErr := submitFn(auth)
+		if submitErr == nil {
+			return result, nonce, attempt + 1, nil
 		}
 
-		lastErr = err
-		slog.Warn("Transaction failed, will retry",
-			"registry", registry.Name,
-			"attempt", attempt+1,
-			"error", err,
-			"nonce", nonce)
+		lastErr = submitErr
 	}
 
 	// All retries failed, reset nonce for next call
@@ -480,36 +440,23 @@ func (s *Service) submitWithRetry(
 	s.currentNonce = nil
 	s.nonceMu.Unlock()
 
-	return nil, lastErr
+	return nil, lastNonce, maxRetries, lastErr
 }
 
 // processIssuance handles certificate issuance by getting an empty leaf proof
 func (s *Service) processIssuance(address common.Address, registry *Registry, zkCertHash [32]byte, queueIndex *big.Int) {
-	slog.Info("Starting issuance process",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"queueIndex", queueIndex.String(),
-		"merkleServiceURL", s.merkleServiceURL)
+	op := logging.NewOperationBuilder(logging.OperationIssuance).
+		WithRegistry(registry.Name, address.Hex()).
+		WithCertificate(common.Bytes2Hex(zkCertHash[:]), "", queueIndex.String())
 
 	// For issuance, we need to get an empty leaf proof
+	op.StartMerkleProof()
 	emptyIndex, proof, err := merkle.GetEmptyLeafProof(s.ctx, s.merkleClient, address.Hex())
 	if err != nil {
-		slog.Error("Failed to get empty leaf proof",
-			"registry", registry.Name,
-			"registryAddress", address.Hex(),
-			"hash", common.Bytes2Hex(zkCertHash[:]),
-			"merkleServiceURL", s.merkleServiceURL,
-			"error", err)
+		op.WithError(err.Error(), "merkle_proof").EmitFailure()
 		return
 	}
-
-	slog.Info("Retrieved empty leaf proof for issuance",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"emptyLeafIndex", emptyIndex,
-		"pathLength", len(proof.Path))
+	op.WithMerkleProof(int64(emptyIndex), len(proof.Path))
 
 	// Convert proof paths to [][32]byte array
 	merkleProof := make([][32]byte, len(proof.Path))
@@ -518,148 +465,74 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		merkleProof[i] = bytes
 	}
 
-	slog.Info("Ready to call processNextOperation for issuance",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"leafIndex", emptyIndex,
-		"queueIndex", queueIndex.String(),
-		"proofLength", len(merkleProof))
-
 	// Submit transaction if private key is configured
 	if s.privateKey == nil {
-		slog.Warn("Skipping transaction submission - no private key configured")
+		op.WithError("no private key configured", "config").EmitSkipped()
 		return
 	}
 
-	// Get current contract state for debugging
-	currentPointer, _ := registry.Contract.CurrentQueuePointer(nil)
-	queueLength, _ := registry.Contract.GetZkCertificateQueueLength(nil)
-	certData, _ := registry.Contract.ZkCertificateProcessingData(nil, zkCertHash)
-
-	slog.Info("Contract state before transaction",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"currentPointer", currentPointer,
-		"queueLength", queueLength,
-		"certState", certData.State,
-		"certGuardian", certData.Guardian.Hex())
-
 	// Submit with retry logic
-	result, err := s.submitWithRetry(registry, func(auth *bind.TransactOpts) (interface{}, error) {
+	op.StartTransaction()
+	result, nonce, attempts, err := s.submitWithRetry(registry, func(auth *bind.TransactOpts) (interface{}, error) {
 		return registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(emptyIndex)), zkCertHash, merkleProof)
 	}, 3)
 
 	if err != nil {
-		slog.Error("Failed to process issuance operation after retries",
-			"registry", registry.Name,
-			"registryAddress", address.Hex(),
-			"hash", common.Bytes2Hex(zkCertHash[:]),
-			"leafIndex", emptyIndex,
-			"queueIndex", queueIndex.String(),
-			"error", err)
+		op.WithTransaction("", nonce, attempts).
+			WithError(err.Error(), "transaction").
+			EmitFailure()
 		return
 	}
 
 	tx := result.(*types.Transaction)
-	slog.Info("Submitted processNextOperation transaction for issuance",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"txHash", tx.Hash().Hex(),
-		"leafIndex", emptyIndex)
+	op.WithTransaction(tx.Hash().Hex(), nonce, attempts).EmitSuccess()
 }
 
 // processRevocation handles certificate revocation by getting proof of existing leaf
 func (s *Service) processRevocation(address common.Address, registry *Registry, zkCertHash [32]byte, queueIndex *big.Int) {
+	op := logging.NewOperationBuilder(logging.OperationRevocation).
+		WithRegistry(registry.Name, address.Hex()).
+		WithCertificate(common.Bytes2Hex(zkCertHash[:]), "", queueIndex.String())
+
 	// Convert zkCertHash to string for the merkle proof service
 	leafValue := new(big.Int).SetBytes(zkCertHash[:])
 	leafStr := leafValue.String()
 
-	slog.Info("Starting revocation process",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"leafDecimal", leafStr,
-		"queueIndex", queueIndex.String(),
-		"merkleServiceURL", s.merkleServiceURL)
-
 	// For revocation, we need to find where this certificate exists in the tree
+	op.StartMerkleProof()
 	proof, err := merkle.GetProof(s.ctx, s.merkleClient, address.Hex(), leafStr)
 	if err != nil {
-		slog.Error("Failed to get merkle proof for revocation",
-			"registry", registry.Name,
-			"registryAddress", address.Hex(),
-			"hash", common.Bytes2Hex(zkCertHash[:]),
-			"leafDecimal", leafStr,
-			"merkleServiceURL", s.merkleServiceURL,
-			"error", err)
+		op.WithError(err.Error(), "merkle_proof").EmitFailure()
 		return
 	}
-
-	slog.Info("Retrieved merkle proof for revocation",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"leafIndex", proof.LeafIndex,
-		"pathLength", len(proof.Path))
+	op.WithMerkleProof(int64(proof.LeafIndex), len(proof.Path))
 
 	// Convert proof paths to [][32]byte array
 	merkleProof := make([][32]byte, len(proof.Path))
 	for i, pathElement := range proof.Path {
-		// The SDK returns TreeNode with uint256.Int values, convert to [32]byte
 		bytes := pathElement.Value.Bytes32()
 		merkleProof[i] = bytes
 	}
 
-	slog.Info("Ready to call processNextOperation for revocation",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"leafIndex", proof.LeafIndex,
-		"queueIndex", queueIndex.String(),
-		"proofLength", len(merkleProof))
-
 	// Submit transaction if private key is configured
 	if s.privateKey == nil {
-		slog.Warn("Skipping transaction submission - no private key configured")
+		op.WithError("no private key configured", "config").EmitSkipped()
 		return
 	}
 
-	// Get current contract state for debugging
-	currentPointer, _ := registry.Contract.CurrentQueuePointer(nil)
-	queueLength, _ := registry.Contract.GetZkCertificateQueueLength(nil)
-	certData, _ := registry.Contract.ZkCertificateProcessingData(nil, zkCertHash)
-
-	slog.Info("Contract state before transaction",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"currentPointer", currentPointer,
-		"queueLength", queueLength,
-		"certState", certData.State,
-		"certGuardian", certData.Guardian.Hex())
-
 	// Submit with retry logic
-	result, err := s.submitWithRetry(registry, func(auth *bind.TransactOpts) (interface{}, error) {
+	op.StartTransaction()
+	result, nonce, attempts, err := s.submitWithRetry(registry, func(auth *bind.TransactOpts) (interface{}, error) {
 		return registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(proof.LeafIndex)), zkCertHash, merkleProof)
 	}, 3)
 
 	if err != nil {
-		slog.Error("Failed to process revocation operation after retries",
-			"registry", registry.Name,
-			"registryAddress", address.Hex(),
-			"hash", common.Bytes2Hex(zkCertHash[:]),
-			"leafIndex", proof.LeafIndex,
-			"queueIndex", queueIndex.String(),
-			"error", err)
+		op.WithTransaction("", nonce, attempts).
+			WithError(err.Error(), "transaction").
+			EmitFailure()
 		return
 	}
 
 	tx := result.(*types.Transaction)
-	slog.Info("Submitted processNextOperation transaction for revocation",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"hash", common.Bytes2Hex(zkCertHash[:]),
-		"txHash", tx.Hash().Hex(),
-		"leafIndex", proof.LeafIndex)
+	op.WithTransaction(tx.Hash().Hex(), nonce, attempts).EmitSuccess()
 }
