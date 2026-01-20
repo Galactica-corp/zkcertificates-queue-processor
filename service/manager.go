@@ -8,6 +8,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	sentryutil "github.com/galactica-corp/zkcertificates-queue-processor/sentry"
 )
 
 // Service represents any service that can be gracefully shutdown
@@ -97,6 +99,8 @@ func (m *Manager) WaitForShutdown(signals ...os.Signal) {
 
 	if err := m.ShutdownAll(ctx); err != nil {
 		slog.Error("error during shutdown", "error", err)
+		sentryutil.CaptureError(err, map[string]string{"location": "shutdown"})
+		sentryutil.Flush()
 		os.Exit(1)
 	}
 

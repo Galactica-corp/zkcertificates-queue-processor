@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/galactica-corp/zkcertificates-queue-processor/logging"
+	sentryutil "github.com/galactica-corp/zkcertificates-queue-processor/sentry"
 	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
 	eventbus "github.com/jilio/ebu"
 	"github.com/jilio/guardians-sdk/v3/pkg/merkle"
@@ -169,7 +170,14 @@ func (s *Service) Start() {
 	// Start a queue monitoring loop for each registry
 	for address, registry := range s.registries {
 		s.wg.Add(1)
-		go s.monitorRegistryQueue(address, registry)
+		go func(addr common.Address, reg *Registry) {
+			defer sentryutil.RecoverAndCapture(map[string]string{
+				"location": "queue_processor",
+				"registry": reg.Name,
+				"address":  addr.Hex(),
+			})
+			s.monitorRegistryQueue(addr, reg)
+		}(address, registry)
 	}
 
 	slog.Info("Queue processor service started", "name", s.name, "registries", len(s.registries))

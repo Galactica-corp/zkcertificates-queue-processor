@@ -5,9 +5,11 @@ go 1.25.0
 require (
 	github.com/Galactica-corp/merkle-proof-service v0.2.7
 	github.com/ethereum/go-ethereum v1.16.3
+	github.com/getsentry/sentry-go v0.41.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/jilio/ebu v0.8.0
 	github.com/jilio/guardians-sdk/v3 v3.0.1-0.20250922144947-b9de7d62ce02
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -41,5 +43,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250715232539-7130f93afb79 // indirect
 	google.golang.org/grpc v1.73.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
