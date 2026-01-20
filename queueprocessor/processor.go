@@ -14,6 +14,7 @@ import (
 	merkleproto "github.com/Galactica-corp/merkle-proof-service/gen/galactica/merkle"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/galactica-corp/zkcertificates-queue-processor/zkregistry"
@@ -398,6 +399,90 @@ func (s *Service) SetPrivateKey(privateKeyHex string) error {
 	return nil
 }
 
+// prepareTransactor creates a transactor with the next nonce
+func (s *Service) prepareTransactor() (*bind.TransactOpts, uint64, error) {
+	auth, err := bind.NewKeyedTransactorWithChainID(s.privateKey, s.chainID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
+
+	s.nonceMu.Lock()
+	if s.currentNonce == nil {
+		nonce, err := s.client.PendingNonceAt(s.ctx, senderAddress)
+		if err != nil {
+			s.nonceMu.Unlock()
+			return nil, 0, err
+		}
+		s.currentNonce = &nonce
+	}
+	thisNonce := *s.currentNonce
+	*s.currentNonce++
+	s.nonceMu.Unlock()
+
+	auth.Nonce = big.NewInt(int64(thisNonce))
+	auth.GasLimit = 10000000
+
+	return auth, thisNonce, nil
+}
+
+// submitWithRetry wraps transaction submission with retry logic and nonce reset
+func (s *Service) submitWithRetry(
+	registry *Registry,
+	submitFn func(auth *bind.TransactOpts) (interface{}, error),
+	maxRetries int,
+) (interface{}, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Reset nonce before retry
+			s.nonceMu.Lock()
+			s.currentNonce = nil
+			s.nonceMu.Unlock()
+
+			backoff := time.Duration(1<<attempt) * time.Second
+			slog.Info("Retrying transaction", "registry", registry.Name, "attempt", attempt+1, "backoff", backoff)
+			time.Sleep(backoff)
+		}
+
+		auth, nonce, err := s.prepareTransactor()
+		if err != nil {
+			lastErr = err
+			slog.Warn("Failed to prepare transactor",
+				"registry", registry.Name,
+				"attempt", attempt+1,
+				"error", err)
+			continue
+		}
+
+		slog.Info("Submitting transaction",
+			"registry", registry.Name,
+			"from", crypto.PubkeyToAddress(s.privateKey.PublicKey).Hex(),
+			"nonce", nonce,
+			"attempt", attempt+1)
+
+		result, err := submitFn(auth)
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+		slog.Warn("Transaction failed, will retry",
+			"registry", registry.Name,
+			"attempt", attempt+1,
+			"error", err,
+			"nonce", nonce)
+	}
+
+	// All retries failed, reset nonce for next call
+	s.nonceMu.Lock()
+	s.currentNonce = nil
+	s.nonceMu.Unlock()
+
+	return nil, lastErr
+}
+
 // processIssuance handles certificate issuance by getting an empty leaf proof
 func (s *Service) processIssuance(address common.Address, registry *Registry, zkCertHash [32]byte, queueIndex *big.Int) {
 	slog.Info("Starting issuance process",
@@ -447,15 +532,6 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		return
 	}
 
-	auth, err := bind.NewKeyedTransactorWithChainID(s.privateKey, s.chainID)
-	if err != nil {
-		slog.Error("Failed to create transactor", "error", err)
-		return
-	}
-
-	// Log transaction sender
-	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
-
 	// Get current contract state for debugging
 	currentPointer, _ := registry.Contract.CurrentQueuePointer(nil)
 	queueLength, _ := registry.Contract.GetZkCertificateQueueLength(nil)
@@ -469,56 +545,29 @@ func (s *Service) processIssuance(address common.Address, registry *Registry, zk
 		"certState", certData.State,
 		"certGuardian", certData.Guardian.Hex())
 
-	// Get and increment nonce atomically
-	s.nonceMu.Lock()
-	if s.currentNonce == nil {
-		nonce, err := s.client.PendingNonceAt(s.ctx, senderAddress)
-		if err != nil {
-			s.nonceMu.Unlock()
-			slog.Error("Failed to get nonce", "error", err)
-			return
-		}
-		s.currentNonce = &nonce
-	}
-	thisNonce := *s.currentNonce
-	*s.currentNonce++
-	s.nonceMu.Unlock()
+	// Submit with retry logic
+	result, err := s.submitWithRetry(registry, func(auth *bind.TransactOpts) (interface{}, error) {
+		return registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(emptyIndex)), zkCertHash, merkleProof)
+	}, 3)
 
-	auth.Nonce = big.NewInt(int64(thisNonce))
-
-	slog.Info("Submitting transaction",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"from", senderAddress.Hex(),
-		"chainID", s.chainID.String(),
-		"leafIndex", emptyIndex,
-		"gasPrice", auth.GasPrice,
-		"gasLimit", auth.GasLimit,
-		"nonce", thisNonce)
-
-	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(emptyIndex)), zkCertHash, merkleProof)
 	if err != nil {
-		// Try to get more details about why it failed
-		slog.Error("Failed to process issuance operation - transaction was rejected before submission",
+		slog.Error("Failed to process issuance operation after retries",
 			"registry", registry.Name,
 			"registryAddress", address.Hex(),
 			"hash", common.Bytes2Hex(zkCertHash[:]),
 			"leafIndex", emptyIndex,
 			"queueIndex", queueIndex.String(),
-			"from", senderAddress.Hex(),
-			"error", err,
-			"errorType", fmt.Sprintf("%T", err),
-			"note", "Transaction never made it to blockchain - failed during pre-flight checks")
+			"error", err)
 		return
 	}
 
+	tx := result.(*types.Transaction)
 	slog.Info("Submitted processNextOperation transaction for issuance",
 		"registry", registry.Name,
 		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"txHash", tx.Hash().Hex(),
-		"leafIndex", emptyIndex,
-		"from", senderAddress.Hex())
+		"leafIndex", emptyIndex)
 }
 
 // processRevocation handles certificate revocation by getting proof of existing leaf
@@ -577,15 +626,6 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		return
 	}
 
-	auth, err := bind.NewKeyedTransactorWithChainID(s.privateKey, s.chainID)
-	if err != nil {
-		slog.Error("Failed to create transactor", "error", err)
-		return
-	}
-
-	// Log transaction sender
-	senderAddress := crypto.PubkeyToAddress(s.privateKey.PublicKey)
-
 	// Get current contract state for debugging
 	currentPointer, _ := registry.Contract.CurrentQueuePointer(nil)
 	queueLength, _ := registry.Contract.GetZkCertificateQueueLength(nil)
@@ -599,53 +639,27 @@ func (s *Service) processRevocation(address common.Address, registry *Registry, 
 		"certState", certData.State,
 		"certGuardian", certData.Guardian.Hex())
 
-	// Get and increment nonce atomically
-	s.nonceMu.Lock()
-	if s.currentNonce == nil {
-		nonce, err := s.client.PendingNonceAt(s.ctx, senderAddress)
-		if err != nil {
-			s.nonceMu.Unlock()
-			slog.Error("Failed to get nonce", "error", err)
-			return
-		}
-		s.currentNonce = &nonce
-	}
-	thisNonce := *s.currentNonce
-	*s.currentNonce++
-	s.nonceMu.Unlock()
+	// Submit with retry logic
+	result, err := s.submitWithRetry(registry, func(auth *bind.TransactOpts) (interface{}, error) {
+		return registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(proof.LeafIndex)), zkCertHash, merkleProof)
+	}, 3)
 
-	auth.Nonce = big.NewInt(int64(thisNonce))
-
-	slog.Info("Submitting transaction",
-		"registry", registry.Name,
-		"registryAddress", address.Hex(),
-		"from", senderAddress.Hex(),
-		"chainID", s.chainID.String(),
-		"leafIndex", proof.LeafIndex,
-		"gasPrice", auth.GasPrice,
-		"gasLimit", auth.GasLimit,
-		"nonce", thisNonce)
-
-	tx, err := registry.Contract.ProcessNextOperation(auth, big.NewInt(int64(proof.LeafIndex)), zkCertHash, merkleProof)
 	if err != nil {
-		slog.Error("Failed to process revocation operation - transaction was rejected before submission",
+		slog.Error("Failed to process revocation operation after retries",
 			"registry", registry.Name,
 			"registryAddress", address.Hex(),
 			"hash", common.Bytes2Hex(zkCertHash[:]),
 			"leafIndex", proof.LeafIndex,
 			"queueIndex", queueIndex.String(),
-			"from", senderAddress.Hex(),
-			"error", err,
-			"errorType", fmt.Sprintf("%T", err),
-			"note", "Transaction never made it to blockchain - failed during pre-flight checks")
+			"error", err)
 		return
 	}
 
+	tx := result.(*types.Transaction)
 	slog.Info("Submitted processNextOperation transaction for revocation",
 		"registry", registry.Name,
 		"registryAddress", address.Hex(),
 		"hash", common.Bytes2Hex(zkCertHash[:]),
 		"txHash", tx.Hash().Hex(),
-		"leafIndex", proof.LeafIndex,
-		"from", senderAddress.Hex())
+		"leafIndex", proof.LeafIndex)
 }
